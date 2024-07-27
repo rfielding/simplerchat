@@ -4,7 +4,7 @@ import requests
 import faiss
 import git
 import numpy as np
-from tqdm import tqdm
+#from tqdm import tqdm
 import time
 
 # Read OpenAI API key from environment variable
@@ -215,7 +215,7 @@ def search_index(query, top_k=5):
 conversation_history = []
 
 # Enter a loop to answer questions
-print("Enter your query about the Linux kernel (type 'exit' to quit):")
+print(">")
 while True:
   query = input("Query: ")
   if query.lower() == 'exit':
