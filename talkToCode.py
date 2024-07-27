@@ -143,7 +143,7 @@ def generate_response(query, file_contents, conversation_history, max_tokens=150
   messages.append({"role": "user", "content": f"Based on the following files, answer the query: {query}\n\n" + "\n\n".join(file_contents)})
 
   data = {
-    "model": "gpt-3.5-turbo",
+    "model": "gpt-4o",
     "messages": messages,
     "max_tokens": max_tokens
   }
