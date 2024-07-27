@@ -111,77 +111,99 @@ def get_file_contents(file_paths):
   return contents
 
 # Function to generate a summary or response using chat/completions
-def generate_response(query, file_contents, max_tokens=1500):
+def generate_response(query, file_contents, max_tokens=1500, max_context_tokens=16384):
   headers = {
     "Content-Type": "application/json",
     "Authorization": f"Bearer {api_key}"
   }
+
+  def count_tokens(text):
+    return len(text.split())
+
+  def truncate_contents(file_contents, max_context_tokens):
+    truncated_contents = []
+    total_tokens = 0
+    for content in file_contents:
+      tokens = count_tokens(content)
+      if total_tokens + tokens > max_context_tokens:
+        # Truncate the content itself if adding the whole content exceeds the limit
+        remaining_tokens = max_context_tokens - total_tokens
+        truncated_contents.append(" ".join(content.split()[:remaining_tokens]))
+        break
+      truncated_contents.append(content)
+      total_tokens += tokens
+    return truncated_contents
+
+  # Estimate initial message size and leave room for the query and assistant system messages
+  initial_context_tokens = 1000
+  file_contents = truncate_contents(file_contents, max_context_tokens - initial_context_tokens)
+
   messages = [
     {"role": "system", "content": "You are a helpful assistant."},
     {"role": "user", "content": f"Based on the following files, answer the query: {query}\n\n" + "\n\n".join(file_contents)}
   ]
+
   data = {
     "model": "gpt-3.5-turbo",
     "messages": messages,
     "max_tokens": max_tokens
   }
-  try:
-    response = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=data)
-    response.raise_for_status()
-    response_data = response.json()
-    return response_data['choices'][0]['message']['content'].strip()
-  except requests.exceptions.HTTPError as e:
-    print(f"Error generating response: {response.text}")
-    raise e
 
-# Function to truncate content to fit within the token limit
-def truncate_contents(file_contents, max_tokens=15000):
-  truncated_contents = []
-  total_tokens = 0
-  for content in file_contents:
-    tokens = len(content.split())
-    if total_tokens + tokens > max_tokens:
-      break
-    truncated_contents.append(content)
-    total_tokens += tokens
-  return truncated_contents
+  while True:
+    try:
+      response = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=data)
+      response.raise_for_status()
+      response_data = response.json()
+      return response_data['choices'][0]['message']['content'].strip()
+    except requests.exceptions.HTTPError as e:
+      if response.status_code == 400 and "context_length_exceeded" in response.text:
+        # Reduce the file contents if the context length is exceeded
+        file_contents = file_contents[:-1]  # Remove the last content
+        messages[1]['content'] = f"Based on the following files, answer the query: {query}\n\n" + "\n\n".join(file_contents)
+        data['messages'] = messages
+      else:
+        print(f"Error generating response: {response.text}")
+        raise e
 
-# Read files from the repository
-print("Reading files from the repository...")
-files = read_files(repo_path)
-file_chunks = []
-chunk_to_file_path = []  # Store mapping from chunk to file path
-for file_path, content in files:
-  chunks = split_text(content)
-  file_chunks.extend(chunks)
-  chunk_to_file_path.extend([file_path] * len(chunks))  # Store the file path for each chunk
+# Check if the index and file paths already exist
+if os.path.exists('kernel_index.faiss') and os.path.exists('file_paths.txt'):
+  # Load the existing index and file paths
+  print("Loading existing index and file paths...")
+  index = faiss.read_index('kernel_index.faiss')
+  with open('file_paths.txt', 'r') as f:
+    chunk_to_file_path = f.read().splitlines()
+else:
+  # Read files from the repository
+  print("Reading files from the repository...")
+  files = read_files(repo_path)
+  file_chunks = []
+  chunk_to_file_path = []  # Store mapping from chunk to file path
+  for file_path, content in files:
+    chunks = split_text(content)
+    file_chunks.extend(chunks)
+    chunk_to_file_path.extend([file_path] * len(chunks))  # Store the file path for each chunk
 
-# Get embeddings for the file chunks
-print("Generating embeddings...")
-embeddings = get_embeddings(file_chunks)
+  # Get embeddings for the file chunks
+  print("Generating embeddings...")
+  embeddings = get_embeddings(file_chunks)
 
-# Check if embeddings were generated correctly
-if embeddings.size == 0:
-  raise ValueError("No embeddings were generated. Please check the input data and API responses.")
+  # Check if embeddings were generated correctly
+  if embeddings.size == 0:
+    raise ValueError("No embeddings were generated. Please check the input data and API responses.")
 
-# Index the embeddings using FAISS
-print("Indexing embeddings...")
-dimension = embeddings.shape[1]
-index = faiss.IndexFlatL2(dimension)
-index.add(embeddings)
+  # Index the embeddings using FAISS
+  print("Indexing embeddings...")
+  dimension = embeddings.shape[1]
+  index = faiss.IndexFlatL2(dimension)
+  index.add(embeddings)
 
-# Save the index and chunk-to-file path mapping
-faiss.write_index(index, 'kernel_index.faiss')
-with open('file_paths.txt', 'w') as f:
-  for file_path in chunk_to_file_path:
-    f.write(file_path + '\n')
+  # Save the index and chunk-to-file path mapping
+  faiss.write_index(index, 'kernel_index.faiss')
+  with open('file_paths.txt', 'w') as f:
+    for file_path in chunk_to_file_path:
+      f.write(file_path + '\n')
 
-print("Indexing completed.")
-
-# Load the index and chunk-to-file path mapping
-index = faiss.read_index('kernel_index.faiss')
-with open('file_paths.txt', 'r') as f:
-  chunk_to_file_path = f.read().splitlines()
+  print("Indexing completed.")
 
 # Function to search the index
 def search_index(query, top_k=5):
@@ -199,8 +221,7 @@ while True:
   results = search_index(query)
   top_file_paths = [result[0] for result in results]
   top_file_contents = get_file_contents(top_file_paths)
-  truncated_contents = truncate_contents(top_file_contents)
-  response = generate_response(query, truncated_contents)
+  response = generate_response(query, top_file_contents)
   print(f"Answer: {response}")
   for file_path, distance in results:
     print(f"File: {file_path}, Distance: {distance}")
