@@ -111,7 +111,7 @@ def get_file_contents(file_paths):
   return contents
 
 # Function to generate a summary or response using chat/completions
-def generate_response(query, file_contents, max_tokens=1500, max_context_tokens=16384):
+def generate_response(query, file_contents, conversation_history, max_tokens=1500, max_context_tokens=16384):
   headers = {
     "Content-Type": "application/json",
     "Authorization": f"Bearer {api_key}"
@@ -138,10 +138,9 @@ def generate_response(query, file_contents, max_tokens=1500, max_context_tokens=
   initial_context_tokens = 1000
   file_contents = truncate_contents(file_contents, max_context_tokens - initial_context_tokens)
 
-  messages = [
-    {"role": "system", "content": "You are a helpful assistant."},
-    {"role": "user", "content": f"Based on the following files, answer the query: {query}\n\n" + "\n\n".join(file_contents)}
-  ]
+  messages = [{"role": "system", "content": "You are a helpful assistant."}]
+  messages.extend(conversation_history)
+  messages.append({"role": "user", "content": f"Based on the following files, answer the query: {query}\n\n" + "\n\n".join(file_contents)})
 
   data = {
     "model": "gpt-3.5-turbo",
@@ -159,7 +158,7 @@ def generate_response(query, file_contents, max_tokens=1500, max_context_tokens=
       if response.status_code == 400 and "context_length_exceeded" in response.text:
         # Reduce the file contents if the context length is exceeded
         file_contents = file_contents[:-1]  # Remove the last content
-        messages[1]['content'] = f"Based on the following files, answer the query: {query}\n\n" + "\n\n".join(file_contents)
+        messages[-1]['content'] = f"Based on the following files, answer the query: {query}\n\n" + "\n\n".join(file_contents)
         data['messages'] = messages
       else:
         print(f"Error generating response: {response.text}")
@@ -212,6 +211,9 @@ def search_index(query, top_k=5):
   results = [(chunk_to_file_path[i], distances[0][j]) for j, i in enumerate(indices[0])]
   return results
 
+# Maintain a conversation history
+conversation_history = []
+
 # Enter a loop to answer questions
 print("Enter your query about the Linux kernel (type 'exit' to quit):")
 while True:
@@ -221,8 +223,11 @@ while True:
   results = search_index(query)
   top_file_paths = [result[0] for result in results]
   top_file_contents = get_file_contents(top_file_paths)
-  response = generate_response(query, top_file_contents)
+  response = generate_response(query, top_file_contents, conversation_history)
   print(f"Answer: {response}")
   for file_path, distance in results:
     print(f"File: {file_path}, Distance: {distance}")
+  # Append the query and response to the conversation history
+  conversation_history.append({"role": "user", "content": query})
+  conversation_history.append({"role": "assistant", "content": response})
 
